@@ -7,6 +7,7 @@ fake one in tests without touching anything else.
 from __future__ import annotations
 
 import math
+import wave
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -35,6 +36,21 @@ class Transcriber(Protocol):
                    word_timestamps: bool = False) -> TranscriptionResult: ...
 
 
+def load_wav(path: str):
+    """Read our normalised 16 kHz mono 16-bit WAV into float32 samples.
+
+    The pipeline has already converted the audio with FFmpeg, so there is no
+    need to decode it a second time inside faster-whisper (which goes through
+    PyAV and breaks with some PyAV versions).
+    """
+    import numpy as np
+    with wave.open(path, "rb") as w:
+        if w.getframerate() != 16000 or w.getnchannels() != 1 or w.getsampwidth() != 2:
+            raise ValueError(f"{path} is not 16 kHz mono 16-bit PCM")
+        frames = w.readframes(w.getnframes())
+    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 class FasterWhisperTranscriber:
     """faster-whisper (CTranslate2 Whisper): open source, CPU or GPU,
     ~4x faster and lighter than the reference implementation."""
@@ -48,7 +64,7 @@ class FasterWhisperTranscriber:
 
     def transcribe(self, wav_path, language=None, initial_prompt=None, word_timestamps=False):
         segments, info = self.model.transcribe(
-            wav_path,
+            load_wav(wav_path),             # already-normalised samples, no second decode
             language=language,              # None -> auto-detect
             initial_prompt=initial_prompt,  # carries context across chunk boundaries
             vad_filter=True,                # skip silence; reduces hallucinated text
