@@ -116,3 +116,27 @@ def test_api_rejects_unsupported_extension():
     with TestClient(app) as client:
         r = client.post("/v1/transcriptions", files={"file": ("notes.txt", b"hi", "text/plain")})
         assert r.status_code == 400
+
+
+def test_missing_cuda_libs_fall_back_to_cpu(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.transcriber import FasterWhisperTranscriber
+
+    class Model:
+        def __init__(self, fail):
+            self.fail = fail
+
+        def transcribe(self, samples, **kw):
+            if self.fail:
+                raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            seg = SimpleNamespace(start=0.0, end=1.0, text=" hi", avg_logprob=-0.1, words=None)
+            return iter([seg]), SimpleNamespace(language="en", language_probability=0.99)
+
+    loaded = []
+    monkeypatch.setattr(FasterWhisperTranscriber, "_load",
+                        lambda self, device, ct: loaded.append(device) or Model(fail=device != "cpu"))
+    engine = FasterWhisperTranscriber(model_size="tiny", device="auto")
+    wav = audio.to_wav(make_audio(tmp_path / "a.mp3", 2), tmp_path / "a.wav")
+    result = engine.transcribe(str(wav))
+    assert loaded == ["auto", "cpu"] and engine.device == "cpu"
+    assert result.segments[0].text == "hi"

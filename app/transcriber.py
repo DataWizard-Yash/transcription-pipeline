@@ -6,12 +6,15 @@ fake one in tests without touching anything else.
 """
 from __future__ import annotations
 
+import logging
 import math
 import wave
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from . import config
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,13 +61,32 @@ class FasterWhisperTranscriber:
     def __init__(self, model_size: str = config.WHISPER_MODEL,
                  device: str = config.WHISPER_DEVICE,
                  compute_type: str = config.WHISPER_COMPUTE_TYPE):
-        from faster_whisper import WhisperModel   # imported lazily: heavy dependency
+        self.model_size = model_size
         self.model_name = f"faster-whisper/{model_size}"
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        self.device = device
+        self.model = self._load(device, compute_type)
+
+    def _load(self, device, compute_type):
+        from faster_whisper import WhisperModel   # imported lazily: heavy dependency
+        return WhisperModel(self.model_size, device=device, compute_type=compute_type)
 
     def transcribe(self, wav_path, language=None, initial_prompt=None, word_timestamps=False):
+        samples = load_wav(wav_path)        # already-normalised samples, no second decode
+        try:
+            return self._transcribe(samples, language, initial_prompt, word_timestamps)
+        except RuntimeError as e:
+            # A GPU is visible but the CUDA libraries (cuBLAS/cuDNN) are missing:
+            # fall back to CPU once instead of failing the whole job.
+            if self.device == "cpu" or not any(k in str(e).lower() for k in ("cuda", "cublas", "cudnn")):
+                raise
+            log.warning("GPU not usable (%s); falling back to CPU", e)
+            self.device = "cpu"
+            self.model = self._load("cpu", "int8")
+            return self._transcribe(samples, language, initial_prompt, word_timestamps)
+
+    def _transcribe(self, samples, language, initial_prompt, word_timestamps):
         segments, info = self.model.transcribe(
-            load_wav(wav_path),             # already-normalised samples, no second decode
+            samples,
             language=language,              # None -> auto-detect
             initial_prompt=initial_prompt,  # carries context across chunk boundaries
             vad_filter=True,                # skip silence; reduces hallucinated text
