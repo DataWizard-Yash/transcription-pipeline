@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 data/
 .venv/
+samples/*.mp3
+samples/*.flac
